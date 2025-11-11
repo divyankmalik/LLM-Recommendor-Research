@@ -14,34 +14,114 @@ import torch
 import torch.nn as nn
 from typing import List, Dict, Tuple
 from dataclasses import dataclass
+import pandas as pd
+from collections import defaultdict
+import torch.nn.functional as F
+from datetime import timedelta
 
 """LOADING DATA"""
 
 def load_amazon_reviews(filepath: str) -> List[Dict]:
     """
-    TODO: Load Amazon Reviews dataset
+    Load Amazon Reviews dataset from CSV or Excel
     Expected format: [{user_id, item_id, rating, timestamp, category}, ...]
-    """
-    pass
 
-def load_aliexpress_data(filepath: str) -> List[Dict]:
-    """
-    TODO: Load AliExpress dataset
-    Expected format: [{user_id, items, context, action}, ...]
-    """
-    pass
+    Args:
+        filepath: Path to the CSV or Excel file (.csv, .xlsx, .xls)
 
-def preprocess_interactions(raw_data: List[Dict]) -> List[Dict]:
+    Returns:
+        List of dictionaries with keys: user_id, item_id, rating, timestamp, category
     """
-    TODO: Convert raw data to hyperedge format
+    # Load file based on extension
+    if filepath.endswith('.csv'):
+        df = pd.read_csv(filepath)
+    elif filepath.endswith('.xlsx') or filepath.endswith('.xls'):
+        df = pd.read_excel(filepath)
+    else:
+        raise ValueError(f"Unsupported file format. Use .csv, .xlsx, or .xls")
+
+    # Map your dataset columns to expected format
+    df_mapped = pd.DataFrame({
+        'user_id': df['review_hash_id'],  # Using review_hash_id as user identifier
+        'item_id': df['upc'],  # Using UPC as item identifier
+        'rating': df['review_rating'],
+        'timestamp': df['review_date'],
+        'category': df['category']
+    })
+
+    # Convert to list of dictionaries
+    reviews = df_mapped.to_dict('records')
+
+    return reviews
+
+# def load_aliexpress_data(filepath: str) -> List[Dict]:
+#     """
+#     TODO: Load AliExpress dataset
+#     Expected format: [{user_id, items, context, action}, ...]
+#     """
+#     pass
+
+def preprocess_interactions(raw_data: List[Dict], 
+                           min_user_interactions: int = 5,
+                           min_item_interactions: int = 5,
+                           session_window_minutes: int = 30) -> List[Dict]:
+    """
+    Preprocess raw Amazon reviews data into hyperedge format
     Output: [{user, items, context, timestamp, action}, ...]
-
-    Tips:
-    - Group by session (30-min window)
-    - Extract context: category, season, device
-    - Filter low-frequency users/items
     """
-    pass
+    
+    
+    
+    df = pd.DataFrame(raw_data)
+    
+    # Filter low-frequency users
+    user_counts = df['user_id'].value_counts()
+    valid_users = user_counts[user_counts >= min_user_interactions].index
+    df = df[df['user_id'].isin(valid_users)]
+    
+    # Filter low-frequency items
+    item_counts = df['item_id'].value_counts()
+    valid_items = item_counts[item_counts >= min_item_interactions].index
+    df = df[df['item_id'].isin(valid_items)]
+    
+    # Sort by user and timestamp
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df = df.sort_values(['user_id', 'timestamp'])
+    
+    # Create sessions
+    hyperedges = []
+    
+    for user_id in df['user_id'].unique():
+        user_data = df[df['user_id'] == user_id].copy()
+        
+        # Group by time windows
+        user_data['time_diff'] = user_data['timestamp'].diff()
+        user_data['new_session'] = (user_data['time_diff'] > timedelta(minutes=session_window_minutes)) | user_data['time_diff'].isna()
+        user_data['session_id'] = user_data['new_session'].cumsum()
+        
+        # Create hyperedges for each session
+        for session_id, session_data in user_data.groupby('session_id'):
+            items = session_data['item_id'].tolist()
+            categories = session_data['category'].unique().tolist()
+            avg_rating = session_data['rating'].mean()
+            timestamp = session_data['timestamp'].iloc[0]
+            
+            hyperedge = {
+                'user': str(user_id),
+                'items': [str(item) for item in items],
+                'context': {
+                    'categories': categories,
+                    'avg_rating': float(avg_rating),
+                    'session_length': len(items),
+                    'primary_category': categories[0] if categories else 'Unknown'
+                },
+                'timestamp': timestamp,
+                'action': 'review'
+            }
+            
+            hyperedges.append(hyperedge)
+    
+    return hyperedges
 
 """CONVERSION TO HYPERGRAPHS"""
 
