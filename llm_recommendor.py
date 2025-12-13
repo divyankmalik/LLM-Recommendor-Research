@@ -141,7 +141,23 @@ class HypergraphConv(nn.Module):
 
     def forward(self, X: torch.Tensor, H: torch.Tensor) -> torch.Tensor:
         # TODO: Implement convolution operation
-        pass
+
+        # Compute Node degree, Edge degree diagonal matrix
+        D_v = torch.sum(H, dim=1)
+        D_e = torch.sum(H, dim=0)
+
+        inv_sqrt_D_v = torch.pow(D_v + 1e-10, -0.5) # add epsilon to avoid zero division
+        inv_sqrt_D_e = torch.pow(D_e + 1e-10, -1)
+
+        # Hypergraph convolution
+        X = self.W(X)
+        X = inv_sqrt_D_v.unsqueeze(1) * X # use unsqueeze to perform matrix multiplication
+        X = torch.matmul(H.t(), X)
+        X = inv_sqrt_D_e.unsqueeze(1) * X
+        X = torch.matmul(H, X)
+        X = inv_sqrt_D_v.unsqueeze(1) * X
+        
+        return X
 
 class BaselineHypergraphModel(nn.Module):
     """
